@@ -1,6 +1,7 @@
 -- UTG - Ultimate Trolling GUI
 -- Starlight Edition
--- NPC-only aim assist is intended for NPCs in Workspace whose names are NPC.
+-- Aim assist supports NPC Models named NPC directly under Workspace and players.
+-- Designed for an experience you control.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -20,18 +21,25 @@ local Config = {
     AimFOV = 180,
     AimSpeed = 0.85,
     AimDistance = 1000,
+    AimTargetMode = "Everyone",
+    AimPlayerName = "",
 }
 
 local State = {
     Speed = false, HighJump = false, Noclip = false, Fullbright = false,
     ESP = false, Names = true, Tracers = false, Health = true,
     AimAssist = false,
+    AimWallCheck = true,
+    AimTeamCheck = false,
+    AimPlayers = true,
+    AimNPCs = true,
 }
 
 local Character, Humanoid
 local ESPObjects = {}
 local Connections = {}
 local AimConnections = {}
+local AimGui, AimCircle
 
 local function icon(name, set)
     local ok, result = pcall(function() return NebulaIcons:GetIcon(name, set or "Material") end)
@@ -145,26 +153,8 @@ end))
 table.insert(Connections, Players.PlayerRemoving:Connect(destroyESP))
 
 --==================================================
--- NPC-only Aim Assist
--- Workspace contains multiple Models named NPC directly; each model owns Head/body parts.
+-- Aim Assist
 --==================================================
-local AimGui
-local AimCircle
-
-local function getNPCTargets()
-    local targets = {}
-    for _, obj in ipairs(workspace:GetChildren()) do
-        if obj:IsA("Model") and obj.Name == "NPC" then
-            local humanoid = obj:FindFirstChildOfClass("Humanoid")
-            local head = obj:FindFirstChild("Head") or obj:FindFirstChild("UpperTorso") or obj:FindFirstChild("HumanoidRootPart")
-            if head and head:IsA("BasePart") and (not humanoid or humanoid.Health > 0) then
-                table.insert(targets, {Model = obj, Part = head})
-            end
-        end
-    end
-    return targets
-end
-
 local function ensureAimCircle()
     if AimGui and AimGui.Parent then return end
     AimGui = Instance.new("ScreenGui")
@@ -194,20 +184,77 @@ local function destroyAimCircle()
     AimGui, AimCircle = nil, nil
 end
 
-local function findBestNPC()
+local function isPlayerAllowed(player)
+    if player == LocalPlayer then return false end
+    if not State.AimTeamCheck then return true end
+    if LocalPlayer.Team == nil or player.Team == nil then return true end
+    return player.Team ~= LocalPlayer.Team
+end
+
+local function getTargetPart(character)
+    return character and (character:FindFirstChild("Head") or character:FindFirstChild("UpperTorso") or character:FindFirstChild("HumanoidRootPart"))
+end
+
+local function hasLineOfSight(camera, part, model)
+    if not State.AimWallCheck then return true end
+    local origin = camera.CFrame.Position
+    local direction = part.Position - origin
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = {Character}
+    params.IgnoreWater = true
+    local result = workspace:Raycast(origin, direction, params)
+    return result == nil or result.Instance:IsDescendantOf(model)
+end
+
+local function targetMatchesName(player)
+    if Config.AimTargetMode ~= "One Player" then return true end
+    local wanted = string.lower((Config.AimPlayerName or ""):gsub("^%s*(.-)%s*$", "%1"))
+    if wanted == "" then return false end
+    return string.lower(player.Name) == wanted or string.lower(player.DisplayName) == wanted
+end
+
+local function getAimTargets()
+    local targets = {}
+    if State.AimPlayers then
+        for _, player in ipairs(Players:GetPlayers()) do
+            if isPlayerAllowed(player) and targetMatchesName(player) and player.Character then
+                local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+                local part = getTargetPart(player.Character)
+                if part and part:IsA("BasePart") and (not humanoid or humanoid.Health > 0) then
+                    table.insert(targets, {Model = player.Character, Part = part, Player = player})
+                end
+            end
+        end
+    end
+    if State.AimNPCs and Config.AimTargetMode == "Everyone" then
+        for _, obj in ipairs(workspace:GetChildren()) do
+            if obj:IsA("Model") and obj.Name == "NPC" then
+                local humanoid = obj:FindFirstChildOfClass("Humanoid")
+                local part = getTargetPart(obj)
+                if part and part:IsA("BasePart") and (not humanoid or humanoid.Health > 0) then
+                    table.insert(targets, {Model = obj, Part = part})
+                end
+            end
+        end
+    end
+    return targets
+end
+
+local function findBestTarget()
     local camera = workspace.CurrentCamera
     if not camera then return nil end
     local center = camera.ViewportSize * 0.5
-    local bestPart, bestScreenDistance
-    for _, target in ipairs(getNPCTargets()) do
+    local bestPart, bestDistance
+    for _, target in ipairs(getAimTargets()) do
         local distance3D = (camera.CFrame.Position - target.Part.Position).Magnitude
-        if distance3D <= Config.AimDistance then
+        if distance3D <= Config.AimDistance and hasLineOfSight(camera, target.Part, target.Model) then
             local screenPos, visible = camera:WorldToViewportPoint(target.Part.Position)
             if visible and screenPos.Z > 0 then
                 local delta = Vector2.new(screenPos.X, screenPos.Y) - center
                 local screenDistance = delta.Magnitude
-                if screenDistance <= Config.AimFOV and (not bestScreenDistance or screenDistance < bestScreenDistance) then
-                    bestPart, bestScreenDistance = target.Part, screenDistance
+                if screenDistance <= Config.AimFOV and (not bestDistance or distance3D < bestDistance) then
+                    bestPart, bestDistance = target.Part, distance3D
                 end
             end
         end
@@ -227,14 +274,11 @@ local function startAimAssist()
     stopAimAssist()
     State.AimAssist = true
     ensureAimCircle()
-    table.insert(AimConnections, RunService.RenderStepped:Connect(function()
-        if not State.AimAssist then return end
-        if AimCircle then AimCircle.Size = UDim2.fromOffset(Config.AimFOV * 2, Config.AimFOV * 2) end
-    end))
     RunService:BindToRenderStep("UTG_AimAssist", Enum.RenderPriority.Camera.Value + 1, function()
         if not State.AimAssist then return end
+        if AimCircle then AimCircle.Size = UDim2.fromOffset(Config.AimFOV * 2, Config.AimFOV * 2) end
         local camera = workspace.CurrentCamera
-        local target = findBestNPC()
+        local target = findBestTarget()
         if camera and target then
             camera.CFrame = camera.CFrame:Lerp(CFrame.lookAt(camera.CFrame.Position, target.Position), math.clamp(Config.AimSpeed, 0, 1))
         end
@@ -286,9 +330,18 @@ local Display = Visuals:CreateGroupbox({Name = "Display", Column = 2}, "Display"
 Display:CreateSlider({Name = "Camera FOV", Icon = icon("scan", "Lucide"), Range = {50, 120}, Increment = 1, CurrentValue = Config.FOV, Callback = function(value) Config.FOV = value local camera = workspace.CurrentCamera if camera then camera.FieldOfView = value end end}, "FOV")
 Display:CreateButton({Name = "Reset FOV", Icon = icon("undo-2", "Lucide"), Callback = function() Config.FOV = 70 if workspace.CurrentCamera then workspace.CurrentCamera.FieldOfView = 70 end end}, "ResetFOV")
 
-local AimBox = Visuals:CreateGroupbox({Name = "NPC Aim Assist", Column = 2}, "NPCAim")
-AimBox:CreateParagraph({Name = "Targeting", Content = "Targets only Models named NPC directly under Workspace. No player targeting."}, "AimInfo")
+local AimBox = Visuals:CreateGroupbox({Name = "Aim Assist", Column = 2}, "Aim")
+AimBox:CreateParagraph({Name = "Targeting", Content = "Targets players and Models named NPC. Among visible targets inside the FOV, the nearest target is selected."}, "AimInfo")
 AimBox:CreateToggle({Name = "Enable Aim Assist", CurrentValue = false, Callback = function(value) if value then startAimAssist() else stopAimAssist() end end}, "AimAssist")
+AimBox:CreateToggle({Name = "Target Players", CurrentValue = true, Callback = function(value) State.AimPlayers = value end}, "AimPlayers")
+AimBox:CreateToggle({Name = "Target NPCs", CurrentValue = true, Callback = function(value) State.AimNPCs = value end}, "AimNPCs")
+AimBox:CreateToggle({Name = "Wall Check", CurrentValue = true, Callback = function(value) State.AimWallCheck = value end}, "AimWallCheck")
+AimBox:CreateToggle({Name = "Team Check", CurrentValue = false, Callback = function(value) State.AimTeamCheck = value end}, "AimTeamCheck")
+AimBox:CreateInput({Name = "Target Mode", Placeholder = "Everyone or One Player", CurrentValue = Config.AimTargetMode, Callback = function(value)
+    local text = tostring(value):lower():gsub("^%s*(.-)%s*$", "%1")
+    if text == "one player" or text == "one" or text == "single" then Config.AimTargetMode = "One Player" else Config.AimTargetMode = "Everyone" end
+end}, "AimTargetMode")
+AimBox:CreateInput({Name = "Target Player", Placeholder = "Username or display name", CurrentValue = Config.AimPlayerName, Callback = function(value) Config.AimPlayerName = tostring(value) end}, "AimPlayerName")
 AimBox:CreateSlider({Name = "Aim FOV", Icon = icon("circle-dot", "Lucide"), Range = {25, 600}, Increment = 5, CurrentValue = Config.AimFOV, Callback = function(value) Config.AimFOV = value end}, "AimFOV")
 AimBox:CreateInput({Name = "Aim FOV (number)", Placeholder = "e.g. 180", CurrentValue = tostring(Config.AimFOV), Callback = function(value) local n = tonumber(value) if n then Config.AimFOV = math.clamp(n, 25, 600) end end}, "AimFOVInput")
 AimBox:CreateSlider({Name = "Aim Speed", Icon = icon("zap", "Lucide"), Range = {0.05, 1}, Increment = 0.05, CurrentValue = Config.AimSpeed, Callback = function(value) Config.AimSpeed = value end}, "AimSpeed")
@@ -310,7 +363,7 @@ UIBox:CreateButton({Name = "Unload UTG", Icon = icon("power", "Lucide"), Callbac
 end}, "Unload")
 UIBox:CreateToggle({Name = "Mobile-friendly layout", CurrentValue = true, Callback = function(value) notify("UTG", value and "Mobile layout enabled" or "Mobile layout option disabled") end}, "MobileLayout")
 local Info = Settings:CreateGroupbox({Name = "About", Column = 2}, "About")
-Info:CreateParagraph({Name = "UTG", Content = "Ultimate Trolling GUI\nStarlight Interface Suite\nBuild: 0.3.1"}, "Version")
+Info:CreateParagraph({Name = "UTG", Content = "Ultimate Trolling GUI\nStarlight Interface Suite\nBuild: 0.4.0"}, "Version")
 
 table.insert(Connections, RunService.Stepped:Connect(function()
     if not Character then return end
@@ -337,7 +390,7 @@ table.insert(Connections, UserInputService.InputBegan:Connect(function(input, pr
     if processed or UserInputService:GetFocusedTextBox() then return end
     if input.KeyCode == Enum.KeyCode.Q then
         if State.AimAssist then stopAimAssist() else startAimAssist() end
-        notify("NPC Aim Assist", State.AimAssist and "Enabled (Q to toggle)" or "Disabled")
+        notify("Aim Assist", State.AimAssist and "Enabled (Q to toggle)" or "Disabled")
     end
 end))
 
