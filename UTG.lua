@@ -1,54 +1,73 @@
 --[[
-    UTG CLIENT - NeverLose Edition
+    UTG - Ultimate Trolling GUI
+    Starlight Edition
 
-    Put this LocalScript beside a ModuleScript named "NeverLose".
-    Copy the official 4lpaca-pin/NeverLose source.luau into that
-    ModuleScript. The upstream project explicitly documents requiring
-    its library as a ModuleScript for Roblox games.
+    UI library: Nebula Softworks Starlight Interface Suite.
+    UTG is designed for an experience you control and uses normal client-side
+    Roblox APIs plus your game's own admin/trolling systems.
 
-    UTG only wires the library to local utilities for an experience you own.
-    No remote-event abuse, anti-cheat bypasses, or other-player manipulation.
+    Current build intentionally focuses on fun, non-destructive utilities.
+    Owner/destructive controls are planned as a separate future build.
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Lighting = game:GetService("Lighting")
+local TweenService = game:GetService("TweenService")
 
-local Player = Players.LocalPlayer
-local PlayerGui = Player:WaitForChild("PlayerGui")
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- NeverLose is supplied as a sibling ModuleScript.
-local NeverLose = require(script:WaitForChild("NeverLose"))
-
-local NotifyAPI = NeverLose:CreateNotification()
-local Logger = NeverLose:CreateLogger()
+-- Starlight + Nebula icon loader.
+local Starlight = loadstring(game:HttpGet("https://raw.nebulasoftworks.xyz/starlight"))()
+local NebulaIcons = loadstring(game:HttpGet("https://raw.nebulasoftworks.xyz/nebula-icon-library-loader"))()
 
 local Config = {
     WalkSpeed = 32,
-    SprintSpeed = 50,
     JumpPower = 70,
-    Accent = "Violet",
+    FOV = 70,
+    ESPRange = 1000,
 }
 
 local State = {
     Speed = false,
-    Sprint = false,
     HighJump = false,
     Noclip = false,
     Fullbright = false,
-    FPS = 0,
-    Ping = 0,
+    ESP = false,
+    Names = true,
+    Tracers = false,
+    Health = true,
 }
 
-local Character, Humanoid
+local Character
+local Humanoid
+local ESPObjects = {}
+local Connections = {}
+
+local function icon(name, set)
+    local ok, result = pcall(function()
+        return NebulaIcons:GetIcon(name, set or "Material")
+    end)
+    return ok and result or nil
+end
+
+local function notify(title, content)
+    pcall(function()
+        Starlight:Notification({
+            Title = title,
+            Icon = icon("sparkles", "Lucide"),
+            Content = content,
+        }, "UTG_" .. tostring(os.clock()))
+    end)
+end
+
 local function setupCharacter(char)
     Character = char
     Humanoid = char:WaitForChild("Humanoid")
 
-    if State.Sprint then
-        Humanoid.WalkSpeed = Config.SprintSpeed
-    elseif State.Speed then
+    if State.Speed then
         Humanoid.WalkSpeed = Config.WalkSpeed
     else
         Humanoid.WalkSpeed = 16
@@ -58,149 +77,282 @@ local function setupCharacter(char)
     Humanoid.JumpPower = State.HighJump and Config.JumpPower or 50
 end
 
-setupCharacter(Player.Character or Player.CharacterAdded:Wait())
-Player.CharacterAdded:Connect(setupCharacter)
+setupCharacter(LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait())
+table.insert(Connections, LocalPlayer.CharacterAdded:Connect(setupCharacter))
 
-local function toast(message)
-    pcall(function()
-        Logger.new("bell", tostring(message), 3)
-    end)
-    pcall(function()
-        NotifyAPI:Notify(tostring(message), 3)
-    end)
-    print("[UTG] " .. tostring(message))
+--==================================================
+-- Player ESP
+--==================================================
+local function destroyESP(player)
+    local entry = ESPObjects[player]
+    if not entry then return end
+
+    if entry.Highlight then entry.Highlight:Destroy() end
+    if entry.Billboard then entry.Billboard:Destroy() end
+    if entry.Tracer then entry.Tracer:Destroy() end
+    ESPObjects[player] = nil
 end
 
+local function makeBillboard(player, character)
+    if not State.Names and not State.Health then return nil end
+
+    local head = character:FindFirstChild("Head")
+    if not head then return nil end
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "UTG_ESP_Name"
+    gui.Adornee = head
+    gui.Size = UDim2.fromOffset(180, 48)
+    gui.StudsOffset = Vector3.new(0, 2.8, 0)
+    gui.AlwaysOnTop = true
+    gui.Parent = PlayerGui
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.fromScale(1, 1)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 13
+    label.TextStrokeTransparency = 0.35
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.Parent = gui
+
+    task.spawn(function()
+        while gui.Parent and character.Parent and State.ESP do
+            local humanoid = character:FindFirstChildOfClass("Humanoid")
+            local root = Character and Character:FindFirstChild("HumanoidRootPart")
+            local targetRoot = character:FindFirstChild("HumanoidRootPart")
+            local distance = root and targetRoot and math.floor((root.Position - targetRoot.Position).Magnitude) or 0
+
+            local text = State.Names and player.DisplayName or ""
+            if State.Health and humanoid then
+                text = text .. (text ~= "" and "\n" or "") .. string.format("HP %d  •  %dm", humanoid.Health, distance)
+            end
+            label.Text = text
+            task.wait(0.15)
+        end
+        if gui then gui:Destroy() end
+    end)
+
+    return gui
+end
+
+local function createESP(player)
+    if player == LocalPlayer or not State.ESP then return end
+    destroyESP(player)
+
+    local character = player.Character
+    if not character then return end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "UTG_ESP_Highlight"
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.FillColor = Color3.fromRGB(108, 86, 235)
+    highlight.FillTransparency = 0.78
+    highlight.OutlineColor = Color3.new(1, 1, 1)
+    highlight.OutlineTransparency = 0.15
+    highlight.Adornee = character
+    highlight.Parent = character
+
+    ESPObjects[player] = {
+        Highlight = highlight,
+        Billboard = makeBillboard(player, character),
+    }
+end
+
+local function refreshESP()
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            if State.ESP then
+                createESP(player)
+            else
+                destroyESP(player)
+            end
+        end
+    end
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        table.insert(Connections, player.CharacterAdded:Connect(function()
+            task.wait(0.4)
+            if State.ESP then createESP(player) end
+        end))
+    end
+end
+
+table.insert(Connections, Players.PlayerAdded:Connect(function(player)
+    table.insert(Connections, player.CharacterAdded:Connect(function()
+        task.wait(0.4)
+        if State.ESP then createESP(player) end
+    end))
+end))
+
+table.insert(Connections, Players.PlayerRemoving:Connect(destroyESP))
+
 --==================================================
--- Window
+-- Starlight Window
 --==================================================
-local Window = NeverLose:CreateWindow({
-    Logo = NeverLose.GlobalLogo,
+local Window = Starlight:CreateWindow({
     Name = "UTG",
-    Content = "Mobile Client",
-    Size = NeverLose.Scales.Mobile or NeverLose.Scales.Default,
-    ConfigFolder = "UTGConfigs",
-    Enable3DRenderer = false,
-    Keybind = "RightShift",
+    Subtitle = "Ultimate Trolling GUI",
+    Icon = 0,
+    LoadingSettings = {
+        Title = "UTG",
+        Subtitle = "Ultimate Trolling GUI",
+    },
+    FileSettings = {
+        ConfigFolder = "UTG",
+    },
 })
 
---==================================================
--- Mobile-friendly floating launcher
---==================================================
-local LauncherGui = Instance.new("ScreenGui")
-LauncherGui.Name = "UTG_Launcher"
-LauncherGui.ResetOnSpawn = false
-LauncherGui.IgnoreGuiInset = true
-LauncherGui.DisplayOrder = 1000
-LauncherGui.Parent = PlayerGui
+local TabSection = Window:CreateTabSection("UTG")
 
-local Launcher = Instance.new("TextButton")
-Launcher.Name = "UTGButton"
-Launcher.AnchorPoint = Vector2.new(0.5, 0.5)
-Launcher.Position = UDim2.new(1, -46, 0.55, 0)
-Launcher.Size = UDim2.fromOffset(52, 52)
-Launcher.BackgroundColor3 = Color3.fromRGB(108, 86, 235)
-Launcher.BorderSizePixel = 0
-Launcher.Text = "U"
-Launcher.TextColor3 = Color3.new(1, 1, 1)
-Launcher.TextSize = 20
-Launcher.Font = Enum.Font.GothamBold
-Launcher.AutoButtonColor = true
-Launcher.Parent = LauncherGui
+local Home = TabSection:CreateTab({
+    Name = "Home",
+    Icon = icon("house", "Lucide"),
+    Columns = 2,
+}, "Home")
 
-local launcherCorner = Instance.new("UICorner")
-launcherCorner.CornerRadius = UDim.new(0, 16)
-launcherCorner.Parent = Launcher
+local PlayerTab = TabSection:CreateTab({
+    Name = "Player",
+    Icon = icon("user", "Lucide"),
+    Columns = 2,
+}, "Player")
 
-local launcherStroke = Instance.new("UIStroke")
-launcherStroke.Color = Color3.new(1, 1, 1)
-launcherStroke.Transparency = 0.72
-launcherStroke.Parent = Launcher
+local Visuals = TabSection:CreateTab({
+    Name = "Visuals",
+    Icon = icon("eye", "Lucide"),
+    Columns = 2,
+}, "Visuals")
 
-local dragging = false
-local moved = false
-local dragStart
-local startPosition
+local Troll = TabSection:CreateTab({
+    Name = "Troll",
+    Icon = icon("wand-sparkles", "Lucide"),
+    Columns = 2,
+}, "Troll")
 
-Launcher.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true
-        moved = false
-        dragStart = input.Position
-        startPosition = Launcher.Position
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if not dragging then return end
-    if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-
-    local delta = input.Position - dragStart
-    if math.abs(delta.X) + math.abs(delta.Y) > 8 then
-        moved = true
-    end
-
-    Launcher.Position = UDim2.new(
-        startPosition.X.Scale,
-        startPosition.X.Offset + delta.X,
-        startPosition.Y.Scale,
-        startPosition.Y.Offset + delta.Y
-    )
-end)
-
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
-end)
-
-Launcher.Activated:Connect(function()
-    if moved then return end
-    Window:ToggleInterface()
-end)
-
---==================================================
--- Watermark / quick status
---==================================================
-local Watermark = Window:Watermark()
-local FPSBlock = Watermark:AddBlock("chart-four-vertical-bars", "-- FPS")
-local PingBlock = Watermark:AddBlock("chart-four-vertical-bars", "-- MS")
-local ToggleBlock = Watermark:AddBlock("cube-vertexes", "UTG")
-ToggleBlock:Input(function()
-    Window:ToggleInterface()
-end)
+local Settings = TabSection:CreateTab({
+    Name = "Settings",
+    Icon = icon("settings", "Lucide"),
+    Columns = 2,
+}, "Settings")
 
 --==================================================
 -- Home
 --==================================================
-Window:AddTabLabel("UTG")
+local Welcome = Home:CreateGroupbox({Name = "UTG", Column = 1}, "Welcome")
+Welcome:CreateParagraph({
+    Name = "Ultimate Trolling GUI",
+    Content = "A clean, mobile-friendly admin client for your experience. More troll modules are coming.",
+}, "WelcomeText")
 
-local Home = Window:AddTab({
-    Icon = "home",
-    Name = "Home",
-})
+local Stats = Home:CreateGroupbox({Name = "Session", Column = 2}, "Stats")
+local statsLabel = Stats:CreateParagraph({
+    Name = "Status",
+    Content = "Loading...",
+}, "StatsText")
 
-local Overview = Home:AddSection({Name = "OVERVIEW", Position = "left"})
-local Quick = Home:AddSection({Name = "QUICK ACTIONS", Position = "right"})
+local function updateStats()
+    local fps = math.floor(1 / math.max(RunService.RenderStepped:Wait(), 1 / 240))
+    local ping = 0
+    pcall(function()
+        ping = math.floor(LocalPlayer:GetNetworkPing() * 1000 + 0.5)
+    end)
+    pcall(function()
+        statsLabel:SetContent(string.format("FPS: %d\nPing: %d ms\nPlayers: %d", fps, ping, #Players:GetPlayers()))
+    end)
+end
 
-Overview:AddLabel("UTG CLIENT", true)
-Overview:AddLabel("NeverLose interface • mobile ready")
-Overview:AddLabel("Use the floating U button to hide/show the menu.", true)
+task.spawn(function()
+    while Window do
+        task.wait(1)
+        updateStats()
+    end
+end)
 
-local status = Overview:AddLabel("Status")
-status:AddToggle({
-    Default = true,
-    Callback = function(v)
-        toast(v and "UTG is active" or "UTG utilities paused")
+Welcome:CreateButton({
+    Name = "Refresh ESP",
+    Icon = icon("refresh-cw", "Lucide"),
+    Callback = refreshESP,
+}, "RefreshESP")
+
+Welcome:CreateButton({
+    Name = "Reset Character",
+    Icon = icon("rotate-ccw", "Lucide"),
+    Callback = function()
+        if Humanoid then Humanoid.Health = 0 end
     end,
-})
+}, "ResetCharacter")
 
-Quick:AddLabel("Fullbright"):AddToggle({
-    Default = false,
-    Flag = "fullbright",
-    Callback = function(v)
-        State.Fullbright = v
-        if v then
+--==================================================
+-- Player
+--==================================================
+local Movement = PlayerTab:CreateGroupbox({Name = "Movement", Column = 1}, "Movement")
+Movement:CreateSlider({
+    Name = "Walk Speed",
+    Icon = icon("gauge", "Lucide"),
+    Range = {16, 100},
+    Increment = 1,
+    CurrentValue = Config.WalkSpeed,
+    Callback = function(value)
+        Config.WalkSpeed = value
+        if State.Speed and Humanoid then Humanoid.WalkSpeed = value end
+    end,
+}, "WalkSpeed")
+
+Movement:CreateToggle({
+    Name = "Speed",
+    CurrentValue = false,
+    Callback = function(value)
+        State.Speed = value
+        if Humanoid then Humanoid.WalkSpeed = value and Config.WalkSpeed or 16 end
+    end,
+}, "Speed")
+
+Movement:CreateSlider({
+    Name = "Jump Power",
+    Icon = icon("arrow-up", "Lucide"),
+    Range = {50, 150},
+    Increment = 1,
+    CurrentValue = Config.JumpPower,
+    Callback = function(value)
+        Config.JumpPower = value
+        if State.HighJump and Humanoid then Humanoid.JumpPower = value end
+    end,
+}, "JumpPower")
+
+Movement:CreateToggle({
+    Name = "High Jump",
+    CurrentValue = false,
+    Callback = function(value)
+        State.HighJump = value
+        if Humanoid then Humanoid.JumpPower = value and Config.JumpPower or 50 end
+    end,
+}, "HighJump")
+
+Movement:CreateToggle({
+    Name = "Noclip",
+    CurrentValue = false,
+    Callback = function(value)
+        State.Noclip = value
+    end,
+}, "Noclip")
+
+local CharacterBox = PlayerTab:CreateGroupbox({Name = "Character", Column = 2}, "Character")
+CharacterBox:CreateButton({
+    Name = "Force Reapply Movement",
+    Icon = icon("rotate-cw", "Lucide"),
+    Callback = function()
+        if Character then setupCharacter(Character) end
+    end,
+}, "Reapply")
+
+CharacterBox:CreateToggle({
+    Name = "Fullbright",
+    CurrentValue = false,
+    Callback = function(value)
+        State.Fullbright = value
+        if value then
             Lighting.Brightness = 3
             Lighting.ClockTime = 14
             Lighting.FogEnd = 100000
@@ -209,218 +361,161 @@ Quick:AddLabel("Fullbright"):AddToggle({
             Lighting.Brightness = 1
             Lighting.GlobalShadows = true
         end
-        toast("Fullbright: " .. (v and "ON" or "OFF"))
     end,
-})
+}, "Fullbright")
 
-Quick:AddLabel("Reset Character"):AddButton({
+--==================================================
+-- Visuals / ESP
+--==================================================
+local ESPBox = Visuals:CreateGroupbox({Name = "Player ESP", Column = 1}, "ESP")
+ESPBox:CreateToggle({
+    Name = "Enable ESP",
+    CurrentValue = false,
+    Callback = function(value)
+        State.ESP = value
+        refreshESP()
+    end,
+}, "ESP")
+
+ESPBox:CreateToggle({
+    Name = "Names",
+    CurrentValue = true,
+    Callback = function(value)
+        State.Names = value
+        if State.ESP then refreshESP() end
+    end,
+}, "ESPNames")
+
+ESPBox:CreateToggle({
+    Name = "Health + Distance",
+    CurrentValue = true,
+    Callback = function(value)
+        State.Health = value
+        if State.ESP then refreshESP() end
+    end,
+}, "ESPHealth")
+
+ESPBox:CreateSlider({
+    Name = "ESP Range",
+    Icon = icon("radar", "Lucide"),
+    Range = {50, 3000},
+    Increment = 25,
+    CurrentValue = Config.ESPRange,
+    Callback = function(value)
+        Config.ESPRange = value
+    end,
+}, "ESPRange")
+
+local Display = Visuals:CreateGroupbox({Name = "Display", Column = 2}, "Display")
+Display:CreateSlider({
+    Name = "Camera FOV",
+    Icon = icon("scan", "Lucide"),
+    Range = {50, 120},
+    Increment = 1,
+    CurrentValue = Config.FOV,
+    Callback = function(value)
+        Config.FOV = value
+        local camera = workspace.CurrentCamera
+        if camera then camera.FieldOfView = value end
+    end,
+}, "FOV")
+
+Display:CreateButton({
+    Name = "Reset FOV",
+    Icon = icon("undo-2", "Lucide"),
     Callback = function()
-        if Humanoid then Humanoid.Health = 0 end
-        toast("Character reset")
+        Config.FOV = 70
+        if workspace.CurrentCamera then workspace.CurrentCamera.FieldOfView = 70 end
     end,
-})
+}, "ResetFOV")
 
 --==================================================
--- Player
+-- Troll starter tab
 --==================================================
-local PlayerTab = Window:AddTab({
-    Icon = "person",
-    Name = "Player",
-})
+local TrollBox = Troll:CreateGroupbox({Name = "Troll Toolkit", Column = 1}, "TrollTools")
+TrollBox:CreateParagraph({
+    Name = "Ready for commands",
+    Content = "This tab is reserved for UTG's original admin/trolling commands. The next build can connect these controls to your game's server-side admin system.",
+}, "TrollInfo")
 
-local Movement = PlayerTab:AddSection({Name = "MOVEMENT", Position = "left"})
-local Advanced = PlayerTab:AddSection({Name = "ADVANCED", Position = "right"})
-
-Movement:AddLabel("Speed"):AddToggle({
-    Default = false,
-    Flag = "speed",
-    Callback = function(v)
-        State.Speed = v
-        if Humanoid then
-            Humanoid.WalkSpeed = State.Sprint and Config.SprintSpeed or (v and Config.WalkSpeed or 16)
-        end
-        toast("Speed: " .. (v and "ON" or "OFF"))
+TrollBox:CreateButton({
+    Name = "Random Troll (coming soon)",
+    Icon = icon("dices", "Lucide"),
+    Callback = function()
+        notify("UTG", "Random Troll is ready for the next command module.")
     end,
-})
+}, "RandomTroll")
 
-Movement:AddLabel("Speed Amount"):AddSlider({
-    Min = 16,
-    Max = 100,
-    Default = Config.WalkSpeed,
-    Rounding = 1,
-    Flag = "speed_amount",
-    Callback = function(v)
-        Config.WalkSpeed = v
-        if State.Speed and not State.Sprint and Humanoid then Humanoid.WalkSpeed = v end
+TrollBox:CreateButton({
+    Name = "Target Picker (coming soon)",
+    Icon = icon("crosshair", "Lucide"),
+    Callback = function()
+        notify("UTG", "Target picker is reserved for the server command module.")
     end,
-})
-
-Movement:AddLabel("Sprint"):AddToggle({
-    Default = false,
-    Flag = "sprint",
-    Callback = function(v)
-        State.Sprint = v
-        if Humanoid then
-            Humanoid.WalkSpeed = v and Config.SprintSpeed or (State.Speed and Config.WalkSpeed or 16)
-        end
-        toast("Sprint: " .. (v and "ON" or "OFF"))
-    end,
-})
-
-Movement:AddLabel("Sprint Speed"):AddSlider({
-    Min = 16,
-    Max = 120,
-    Default = Config.SprintSpeed,
-    Rounding = 1,
-    Flag = "sprint_amount",
-    Callback = function(v)
-        Config.SprintSpeed = v
-        if State.Sprint and Humanoid then Humanoid.WalkSpeed = v end
-    end,
-})
-
-Advanced:AddLabel("High Jump"):AddToggle({
-    Default = false,
-    Flag = "high_jump",
-    Callback = function(v)
-        State.HighJump = v
-        if Humanoid then
-            Humanoid.UseJumpPower = true
-            Humanoid.JumpPower = v and Config.JumpPower or 50
-        end
-        toast("High jump: " .. (v and "ON" or "OFF"))
-    end,
-})
-
-Advanced:AddLabel("Jump Power"):AddSlider({
-    Min = 50,
-    Max = 150,
-    Default = Config.JumpPower,
-    Rounding = 1,
-    Flag = "jump_power",
-    Callback = function(v)
-        Config.JumpPower = v
-        if State.HighJump and Humanoid then Humanoid.JumpPower = v end
-    end,
-})
-
-Advanced:AddLabel("Noclip Testing"):AddToggle({
-    Default = false,
-    Flag = "noclip",
-    Callback = function(v)
-        State.Noclip = v
-        toast("Noclip testing: " .. (v and "ON" or "OFF"))
-    end,
-})
-
---==================================================
--- Visuals
---==================================================
-local Visuals = Window:AddTab({
-    Icon = "eye",
-    Name = "Visuals",
-})
-
-local Display = Visuals:AddSection({Name = "DISPLAY", Position = "left"})
-local Theme = Visuals:AddSection({Name = "THEME", Position = "right"})
-
-Display:AddLabel("FPS / Ping Monitor"):AddToggle({
-    Default = true,
-    Flag = "monitor",
-    Callback = function(v)
-        toast("Monitor: " .. (v and "ON" or "OFF"))
-    end,
-})
-
-Display:AddLabel("Menu Scale"):AddDropdown({
-    Default = "Mobile",
-    Values = {"Default", "Large", "Mobile", "Small"},
-    Flag = "menu_scale",
-    Callback = function(v)
-        pcall(function() Window:SetSize(NeverLose.Scales[v]) end)
-        toast("Menu scale: " .. tostring(v))
-    end,
-})
-
-Theme:AddLabel("Accent"):AddDropdown({
-    Default = "Violet",
-    Values = {"Violet", "Blue", "Cyan", "Green", "Orange", "Pink"},
-    Flag = "accent",
-    Callback = function(v)
-        Config.Accent = v
-        toast("Accent selected: " .. tostring(v))
-    end,
-})
-
-Theme:AddLabel("3D Menu"):AddToggle({
-    Default = false,
-    Flag = "3d",
-    Callback = function(v)
-        pcall(function() Window:Set3DRender(v) end)
-    end,
-})
+}, "TargetPicker")
 
 --==================================================
 -- Settings
 --==================================================
-Window.UserSettings:AddLabel("Menu Keybind"):AddKeybind({
-    Default = "RightShift",
-    Callback = function(v)
-        Window.Keybind = v
-        toast("Menu keybind changed")
+local UIBox = Settings:CreateGroupbox({Name = "Interface", Column = 1}, "Interface")
+UIBox:CreateButton({
+    Name = "Unload UTG",
+    Icon = icon("power", "Lucide"),
+    Callback = function()
+        for _, connection in ipairs(Connections) do
+            pcall(function() connection:Disconnect() end)
+        end
+        for player in pairs(ESPObjects) do
+            destroyESP(player)
+        end
+        pcall(function() Starlight:Destroy() end)
     end,
-})
+}, "Unload")
 
-Window.UserSettings:AddLabel("Menu Scale"):AddDropdown({
-    Default = "Mobile",
-    Values = {"Default", "Large", "Mobile", "Small"},
-    Callback = function(v)
-        pcall(function() Window:SetSize(NeverLose.Scales[v]) end)
+UIBox:CreateToggle({
+    Name = "Mobile-friendly layout",
+    CurrentValue = true,
+    Callback = function(value)
+        notify("UTG", value and "Mobile layout enabled" or "Mobile layout option disabled")
     end,
-})
+}, "MobileLayout")
 
-Window.UserSettings:AddLabel("3D Menu"):AddToggle({
-    Default = false,
-    Callback = function(v)
-        pcall(function() Window:Set3DRender(v) end)
-    end,
-})
+local Info = Settings:CreateGroupbox({Name = "About", Column = 2}, "About")
+Info:CreateParagraph({
+    Name = "UTG",
+    Content = "Ultimate Trolling GUI\nStarlight Interface Suite\nBuild: 0.2.0",
+}, "Version")
 
 --==================================================
--- Runtime stats / noclip
+-- Runtime
 --==================================================
-local frames = 0
-local elapsed = 0
-RunService.RenderStepped:Connect(function(dt)
-    frames += 1
-    elapsed += dt
-    if elapsed >= 0.5 then
-        State.FPS = math.floor(frames / elapsed + 0.5)
-        frames = 0
-        elapsed = 0
-
-        local ping = 0
-        pcall(function()
-            ping = math.floor(Player:GetNetworkPing() * 1000 + 0.5)
-        end)
-        State.Ping = ping
-
-        pcall(function() FPSBlock:SetText(tostring(State.FPS) .. " FPS") end)
-        pcall(function() PingBlock:SetText(tostring(State.Ping) .. " MS") end)
-    end
-end)
-
-RunService.Stepped:Connect(function()
-    if not State.Noclip or not Character then return end
-    for _, obj in ipairs(Character:GetDescendants()) do
-        if obj:IsA("BasePart") then
-            obj.CanCollide = false
+table.insert(Connections, RunService.Stepped:Connect(function()
+    if not Character then return end
+    if State.Noclip then
+        for _, obj in ipairs(Character:GetDescendants()) do
+            if obj:IsA("BasePart") then
+                obj.CanCollide = false
+            end
         end
     end
-end)
+end))
 
-Player.CharacterAdded:Connect(function(char)
-    setupCharacter(char)
-end)
+-- Keep ESP distance meaningful by hiding entries beyond the selected range.
+table.insert(Connections, RunService.RenderStepped:Connect(function()
+    if not State.ESP or not Character then return end
+    local root = Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
 
-toast("UTG loaded • NeverLose UI ready")
+    for player, entry in pairs(ESPObjects) do
+        local target = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if target and entry.Highlight then
+            entry.Highlight.Enabled = (root.Position - target.Position).Magnitude <= Config.ESPRange
+        end
+        if entry.Billboard then
+            local head = player.Character and player.Character:FindFirstChild("Head")
+            entry.Billboard.Enabled = head ~= nil and target ~= nil and (root.Position - target.Position).Magnitude <= Config.ESPRange
+        end
+    end
+end))
+
+notify("UTG Loaded", "Starlight interface is ready.")
