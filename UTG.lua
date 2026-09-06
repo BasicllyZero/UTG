@@ -289,6 +289,25 @@ end
 -- Starlight Window
 --==================================================
 local Window = Starlight:CreateWindow({Name = "UTG", Subtitle = "Ultimate Trolling GUI", Icon = 0, LoadingSettings = {Title = "UTG", Subtitle = "Ultimate Trolling GUI"}, FileSettings = {ConfigFolder = "UTG"}})
+
+-- Keep Starlight's floating mobile button alive when the window's X button is used.
+-- Starlight normally destroys the entire interface from the X button, which also destroys
+-- the floating button. For UTG, X acts as a close/hide action so the floating button can reopen it.
+local RealStarlightDestroy = Starlight.Destroy
+Starlight.Destroy = function(self)
+    local interface = self.Instance
+    if interface and interface.Parent then
+        local mainWindow = interface:FindFirstChild("MainWindow")
+        local drag = interface:FindFirstChild("Drag")
+        if mainWindow then mainWindow.Visible = false end
+        if drag then drag.Visible = false end
+        if interface:FindFirstChild("MobileToggle") then
+            interface.MobileToggle.Visible = true
+        end
+        self.Minimized = true
+    end
+end
+
 local TabSection = Window:CreateTabSection("UTG")
 local Home = TabSection:CreateTab({Name = "Home", Icon = icon("house", "Lucide"), Columns = 2}, "Home")
 local PlayerTab = TabSection:CreateTab({Name = "Player", Icon = icon("user", "Lucide"), Columns = 2}, "Player")
@@ -359,7 +378,7 @@ UIBox:CreateButton({Name = "Unload UTG", Icon = icon("power", "Lucide"), Callbac
     for _, connection in ipairs(Connections) do pcall(function() connection:Disconnect() end) end
     for player in pairs(ESPObjects) do destroyESP(player) end
     stopAimAssist()
-    pcall(function() Starlight:Destroy() end)
+    pcall(function() RealStarlightDestroy(Starlight) end)
 end}, "Unload")
 UIBox:CreateToggle({Name = "Mobile-friendly layout", CurrentValue = true, Callback = function(value) notify("UTG", value and "Mobile layout enabled" or "Mobile layout option disabled") end}, "MobileLayout")
 local Info = Settings:CreateGroupbox({Name = "About", Column = 2}, "About")
