@@ -19,7 +19,6 @@ local TweenService = game:GetService("TweenService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- Starlight + Nebula icon loader.
 local Starlight = loadstring(game:HttpGet("https://raw.nebulasoftworks.xyz/starlight"))()
 local NebulaIcons = loadstring(game:HttpGet("https://raw.nebulasoftworks.xyz/nebula-icon-library-loader"))()
 
@@ -28,6 +27,9 @@ local Config = {
     JumpPower = 70,
     FOV = 70,
     ESPRange = 1000,
+    AimFOV = 180,
+    AimSpeed = 0.85,
+    AimRange = 1000,
 }
 
 local State = {
@@ -39,12 +41,16 @@ local State = {
     Names = true,
     Tracers = false,
     Health = true,
+    NPCAim = false,
+    AimCircle = true,
 }
 
 local Character
 local Humanoid
 local ESPObjects = {}
 local Connections = {}
+local AimConnection
+local AimCircle
 
 local function icon(name, set)
     local ok, result = pcall(function()
@@ -190,6 +196,125 @@ end))
 table.insert(Connections, Players.PlayerRemoving:Connect(destroyESP))
 
 --==================================================
+-- NPC-only Aim Assist
+--==================================================
+local function getNPCRoot()
+    return workspace:FindFirstChild("NPC")
+end
+
+local function getAimPart(model)
+    if not model or not model:IsA("Model") then return nil end
+
+    local humanoid = model:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.Health <= 0 then return nil end
+
+    return model:FindFirstChild("Head")
+        or model:FindFirstChild("UpperTorso")
+        or model:FindFirstChild("HumanoidRootPart")
+        or model.PrimaryPart
+end
+
+local function getClosestNPCToCrosshair()
+    local camera = workspace.CurrentCamera
+    local npcRoot = getNPCRoot()
+    local localRoot = Character and Character:FindFirstChild("HumanoidRootPart")
+    if not camera or not npcRoot or not localRoot then return nil end
+
+    local viewport = camera.ViewportSize
+    local center = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+    local bestPart
+    local bestScreenDistance = Config.AimFOV
+
+    for _, npc in ipairs(npcRoot:GetChildren()) do
+        local part = getAimPart(npc)
+        if part then
+            local worldDistance = (localRoot.Position - part.Position).Magnitude
+            if worldDistance <= Config.AimRange then
+                local screenPoint, visible = camera:WorldToViewportPoint(part.Position)
+                if visible and screenPoint.Z > 0 then
+                    local screenDistance = (Vector2.new(screenPoint.X, screenPoint.Y) - center).Magnitude
+                    if screenDistance <= bestScreenDistance then
+                        bestScreenDistance = screenDistance
+                        bestPart = part
+                    end
+                end
+            end
+        end
+    end
+
+    return bestPart
+end
+
+local function createAimCircle()
+    if AimCircle then AimCircle:Destroy() end
+
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "UTG_NPCAimFOV"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999
+    gui.Parent = PlayerGui
+
+    local circle = Instance.new("Frame")
+    circle.Name = "FOV"
+    circle.AnchorPoint = Vector2.new(0.5, 0.5)
+    circle.Position = UDim2.fromScale(0.5, 0.5)
+    circle.Size = UDim2.fromOffset(Config.AimFOV * 2, Config.AimFOV * 2)
+    circle.BackgroundTransparency = 1
+    circle.BorderSizePixel = 0
+    circle.Parent = gui
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.15
+    stroke.Parent = circle
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = circle
+
+    AimCircle = gui
+end
+
+local function updateAimCircle()
+    if not AimCircle then return end
+    local circle = AimCircle:FindFirstChild("FOV")
+    if circle then
+        circle.Size = UDim2.fromOffset(Config.AimFOV * 2, Config.AimFOV * 2)
+        circle.Visible = State.NPCAim and State.AimCircle
+    end
+end
+
+local function stopNPCAim()
+    if AimConnection then
+        RunService:UnbindFromRenderStep("UTG_NPCAimAssist")
+        AimConnection = nil
+    end
+    updateAimCircle()
+end
+
+local function startNPCAim()
+    stopNPCAim()
+    if not State.NPCAim then return end
+
+    createAimCircle()
+    updateAimCircle()
+
+    RunService:BindToRenderStep("UTG_NPCAimAssist", Enum.RenderPriority.Camera.Value + 1, function()
+        if not State.NPCAim then return end
+
+        local camera = workspace.CurrentCamera
+        local target = getClosestNPCToCrosshair()
+        if not camera or not target then return end
+
+        local desired = CFrame.lookAt(camera.CFrame.Position, target.Position)
+        camera.CFrame = camera.CFrame:Lerp(desired, math.clamp(Config.AimSpeed, 0.01, 1))
+    end)
+
+    AimConnection = true
+end
+
+--==================================================
 -- Starlight Window
 --==================================================
 local Window = Starlight:CreateWindow({
@@ -207,35 +332,11 @@ local Window = Starlight:CreateWindow({
 
 local TabSection = Window:CreateTabSection("UTG")
 
-local Home = TabSection:CreateTab({
-    Name = "Home",
-    Icon = icon("house", "Lucide"),
-    Columns = 2,
-}, "Home")
-
-local PlayerTab = TabSection:CreateTab({
-    Name = "Player",
-    Icon = icon("user", "Lucide"),
-    Columns = 2,
-}, "Player")
-
-local Visuals = TabSection:CreateTab({
-    Name = "Visuals",
-    Icon = icon("eye", "Lucide"),
-    Columns = 2,
-}, "Visuals")
-
-local Troll = TabSection:CreateTab({
-    Name = "Troll",
-    Icon = icon("wand-sparkles", "Lucide"),
-    Columns = 2,
-}, "Troll")
-
-local Settings = TabSection:CreateTab({
-    Name = "Settings",
-    Icon = icon("settings", "Lucide"),
-    Columns = 2,
-}, "Settings")
+local Home = TabSection:CreateTab({Name = "Home", Icon = icon("house", "Lucide"), Columns = 2}, "Home")
+local PlayerTab = TabSection:CreateTab({Name = "Player", Icon = icon("user", "Lucide"), Columns = 2}, "Player")
+local Visuals = TabSection:CreateTab({Name = "Visuals", Icon = icon("eye", "Lucide"), Columns = 2}, "Visuals")
+local Troll = TabSection:CreateTab({Name = "Troll", Icon = icon("wand-sparkles", "Lucide"), Columns = 2}, "Troll")
+local Settings = TabSection:CreateTab({Name = "Settings", Icon = icon("settings", "Lucide"), Columns = 2}, "Settings")
 
 --==================================================
 -- Home
@@ -247,10 +348,7 @@ Welcome:CreateParagraph({
 }, "WelcomeText")
 
 local Stats = Home:CreateGroupbox({Name = "Session", Column = 2}, "Stats")
-local statsLabel = Stats:CreateParagraph({
-    Name = "Status",
-    Content = "Loading...",
-}, "StatsText")
+local statsLabel = Stats:CreateParagraph({Name = "Status", Content = "Loading..."}, "StatsText")
 
 local function updateStats()
     local fps = math.floor(1 / math.max(RunService.RenderStepped:Wait(), 1 / 240))
@@ -270,12 +368,7 @@ task.spawn(function()
     end
 end)
 
-Welcome:CreateButton({
-    Name = "Refresh ESP",
-    Icon = icon("refresh-cw", "Lucide"),
-    Callback = refreshESP,
-}, "RefreshESP")
-
+Welcome:CreateButton({Name = "Refresh ESP", Icon = icon("refresh-cw", "Lucide"), Callback = refreshESP}, "RefreshESP")
 Welcome:CreateButton({
     Name = "Reset Character",
     Icon = icon("rotate-ccw", "Lucide"),
@@ -289,67 +382,44 @@ Welcome:CreateButton({
 --==================================================
 local Movement = PlayerTab:CreateGroupbox({Name = "Movement", Column = 1}, "Movement")
 Movement:CreateSlider({
-    Name = "Walk Speed",
-    Icon = icon("gauge", "Lucide"),
-    Range = {16, 100},
-    Increment = 1,
+    Name = "Walk Speed", Icon = icon("gauge", "Lucide"), Range = {16, 100}, Increment = 1,
     CurrentValue = Config.WalkSpeed,
     Callback = function(value)
         Config.WalkSpeed = value
         if State.Speed and Humanoid then Humanoid.WalkSpeed = value end
     end,
 }, "WalkSpeed")
-
 Movement:CreateToggle({
-    Name = "Speed",
-    CurrentValue = false,
+    Name = "Speed", CurrentValue = false,
     Callback = function(value)
         State.Speed = value
         if Humanoid then Humanoid.WalkSpeed = value and Config.WalkSpeed or 16 end
     end,
 }, "Speed")
-
 Movement:CreateSlider({
-    Name = "Jump Power",
-    Icon = icon("arrow-up", "Lucide"),
-    Range = {50, 150},
-    Increment = 1,
+    Name = "Jump Power", Icon = icon("arrow-up", "Lucide"), Range = {50, 150}, Increment = 1,
     CurrentValue = Config.JumpPower,
     Callback = function(value)
         Config.JumpPower = value
         if State.HighJump and Humanoid then Humanoid.JumpPower = value end
     end,
 }, "JumpPower")
-
 Movement:CreateToggle({
-    Name = "High Jump",
-    CurrentValue = false,
+    Name = "High Jump", CurrentValue = false,
     Callback = function(value)
         State.HighJump = value
         if Humanoid then Humanoid.JumpPower = value and Config.JumpPower or 50 end
     end,
 }, "HighJump")
-
-Movement:CreateToggle({
-    Name = "Noclip",
-    CurrentValue = false,
-    Callback = function(value)
-        State.Noclip = value
-    end,
-}, "Noclip")
+Movement:CreateToggle({Name = "Noclip", CurrentValue = false, Callback = function(value) State.Noclip = value end}, "Noclip")
 
 local CharacterBox = PlayerTab:CreateGroupbox({Name = "Character", Column = 2}, "Character")
 CharacterBox:CreateButton({
-    Name = "Force Reapply Movement",
-    Icon = icon("rotate-cw", "Lucide"),
-    Callback = function()
-        if Character then setupCharacter(Character) end
-    end,
+    Name = "Force Reapply Movement", Icon = icon("rotate-cw", "Lucide"),
+    Callback = function() if Character then setupCharacter(Character) end end,
 }, "Reapply")
-
 CharacterBox:CreateToggle({
-    Name = "Fullbright",
-    CurrentValue = false,
+    Name = "Fullbright", CurrentValue = false,
     Callback = function(value)
         State.Fullbright = value
         if value then
@@ -365,53 +435,63 @@ CharacterBox:CreateToggle({
 }, "Fullbright")
 
 --==================================================
--- Visuals / ESP
+-- Visuals / ESP + Aim
 --==================================================
 local ESPBox = Visuals:CreateGroupbox({Name = "Player ESP", Column = 1}, "ESP")
-ESPBox:CreateToggle({
-    Name = "Enable ESP",
-    CurrentValue = false,
-    Callback = function(value)
-        State.ESP = value
-        refreshESP()
-    end,
-}, "ESP")
-
-ESPBox:CreateToggle({
-    Name = "Names",
-    CurrentValue = true,
-    Callback = function(value)
-        State.Names = value
-        if State.ESP then refreshESP() end
-    end,
-}, "ESPNames")
-
-ESPBox:CreateToggle({
-    Name = "Health + Distance",
-    CurrentValue = true,
-    Callback = function(value)
-        State.Health = value
-        if State.ESP then refreshESP() end
-    end,
-}, "ESPHealth")
-
+ESPBox:CreateToggle({Name = "Enable ESP", CurrentValue = false, Callback = function(value) State.ESP = value; refreshESP() end}, "ESP")
+ESPBox:CreateToggle({Name = "Names", CurrentValue = true, Callback = function(value) State.Names = value; if State.ESP then refreshESP() end end}, "ESPNames")
+ESPBox:CreateToggle({Name = "Health + Distance", CurrentValue = true, Callback = function(value) State.Health = value; if State.ESP then refreshESP() end end}, "ESPHealth")
 ESPBox:CreateSlider({
-    Name = "ESP Range",
-    Icon = icon("radar", "Lucide"),
-    Range = {50, 3000},
-    Increment = 25,
-    CurrentValue = Config.ESPRange,
-    Callback = function(value)
-        Config.ESPRange = value
-    end,
+    Name = "ESP Range", Icon = icon("radar", "Lucide"), Range = {50, 3000}, Increment = 25,
+    CurrentValue = Config.ESPRange, Callback = function(value) Config.ESPRange = value end,
 }, "ESPRange")
 
-local Display = Visuals:CreateGroupbox({Name = "Display", Column = 2}, "Display")
+local AimBox = Visuals:CreateGroupbox({Name = "NPC Aim Assist", Column = 2}, "NPCAim")
+AimBox:CreateParagraph({
+    Name = "NPC-only targeting",
+    Content = "Targets models inside Workspace.NPC and smoothly aims at their Head when they are inside the FOV circle.",
+}, "AimInfo")
+AimBox:CreateToggle({
+    Name = "Enable NPC Aim", CurrentValue = false,
+    Callback = function(value)
+        State.NPCAim = value
+        if value then startNPCAim() else stopNPCAim() end
+    end,
+}, "NPCAim")
+AimBox:CreateToggle({
+    Name = "Show FOV Circle", CurrentValue = true,
+    Callback = function(value)
+        State.AimCircle = value
+        updateAimCircle()
+    end,
+}, "AimCircle")
+AimBox:CreateSlider({
+    Name = "FOV Radius", Icon = icon("circle-dot", "Lucide"), Range = {50, 500}, Increment = 5,
+    CurrentValue = Config.AimFOV,
+    Callback = function(value)
+        Config.AimFOV = value
+        updateAimCircle()
+    end,
+}, "AimFOV")
+AimBox:CreateSlider({
+    Name = "Aim Speed", Icon = icon("move-3d", "Lucide"), Range = {5, 100}, Increment = 5,
+    CurrentValue = 85,
+    Callback = function(value) Config.AimSpeed = value / 100 end,
+}, "AimSpeed")
+AimBox:CreateSlider({
+    Name = "Max Distance", Icon = icon("scan", "Lucide"), Range = {100, 3000}, Increment = 50,
+    CurrentValue = Config.AimRange,
+    Callback = function(value) Config.AimRange = value end,
+}, "AimRange")
+AimBox:CreateButton({
+    Name = "Aim Assist: Q Toggle",
+    Icon = icon("keyboard", "Lucide"),
+    Callback = function() notify("NPC Aim", State.NPCAim and "Currently ON — press Q to toggle." or "Currently OFF — press Q to toggle.") end,
+}, "AimKeyInfo")
+
+local Display = Visuals:CreateGroupbox({Name = "Display", Column = 1}, "Display")
 Display:CreateSlider({
-    Name = "Camera FOV",
-    Icon = icon("scan", "Lucide"),
-    Range = {50, 120},
-    Increment = 1,
+    Name = "Camera FOV", Icon = icon("scan", "Lucide"), Range = {50, 120}, Increment = 1,
     CurrentValue = Config.FOV,
     Callback = function(value)
         Config.FOV = value
@@ -419,10 +499,8 @@ Display:CreateSlider({
         if camera then camera.FieldOfView = value end
     end,
 }, "FOV")
-
 Display:CreateButton({
-    Name = "Reset FOV",
-    Icon = icon("undo-2", "Lucide"),
+    Name = "Reset FOV", Icon = icon("undo-2", "Lucide"),
     Callback = function()
         Config.FOV = 70
         if workspace.CurrentCamera then workspace.CurrentCamera.FieldOfView = 70 end
@@ -437,21 +515,13 @@ TrollBox:CreateParagraph({
     Name = "Ready for commands",
     Content = "This tab is reserved for UTG's original admin/trolling commands. The next build can connect these controls to your game's server-side admin system.",
 }, "TrollInfo")
-
 TrollBox:CreateButton({
-    Name = "Random Troll (coming soon)",
-    Icon = icon("dices", "Lucide"),
-    Callback = function()
-        notify("UTG", "Random Troll is ready for the next command module.")
-    end,
+    Name = "Random Troll (coming soon)", Icon = icon("dices", "Lucide"),
+    Callback = function() notify("UTG", "Random Troll is ready for the next command module.") end,
 }, "RandomTroll")
-
 TrollBox:CreateButton({
-    Name = "Target Picker (coming soon)",
-    Icon = icon("crosshair", "Lucide"),
-    Callback = function()
-        notify("UTG", "Target picker is reserved for the server command module.")
-    end,
+    Name = "Target Picker (coming soon)", Icon = icon("crosshair", "Lucide"),
+    Callback = function() notify("UTG", "Target picker is reserved for the server command module.") end,
 }, "TargetPicker")
 
 --==================================================
@@ -459,31 +529,24 @@ TrollBox:CreateButton({
 --==================================================
 local UIBox = Settings:CreateGroupbox({Name = "Interface", Column = 1}, "Interface")
 UIBox:CreateButton({
-    Name = "Unload UTG",
-    Icon = icon("power", "Lucide"),
+    Name = "Unload UTG", Icon = icon("power", "Lucide"),
     Callback = function()
-        for _, connection in ipairs(Connections) do
-            pcall(function() connection:Disconnect() end)
-        end
-        for player in pairs(ESPObjects) do
-            destroyESP(player)
-        end
+        for _, connection in ipairs(Connections) do pcall(function() connection:Disconnect() end) end
+        for player in pairs(ESPObjects) do destroyESP(player) end
+        stopNPCAim()
+        if AimCircle then AimCircle:Destroy(); AimCircle = nil end
         pcall(function() Starlight:Destroy() end)
     end,
 }, "Unload")
-
 UIBox:CreateToggle({
-    Name = "Mobile-friendly layout",
-    CurrentValue = true,
-    Callback = function(value)
-        notify("UTG", value and "Mobile layout enabled" or "Mobile layout option disabled")
-    end,
+    Name = "Mobile-friendly layout", CurrentValue = true,
+    Callback = function(value) notify("UTG", value and "Mobile layout enabled" or "Mobile layout option disabled") end,
 }, "MobileLayout")
 
 local Info = Settings:CreateGroupbox({Name = "About", Column = 2}, "About")
 Info:CreateParagraph({
     Name = "UTG",
-    Content = "Ultimate Trolling GUI\nStarlight Interface Suite\nBuild: 0.2.0",
+    Content = "Ultimate Trolling GUI\nStarlight Interface Suite\nBuild: 0.3.0",
 }, "Version")
 
 --==================================================
@@ -493,14 +556,11 @@ table.insert(Connections, RunService.Stepped:Connect(function()
     if not Character then return end
     if State.Noclip then
         for _, obj in ipairs(Character:GetDescendants()) do
-            if obj:IsA("BasePart") then
-                obj.CanCollide = false
-            end
+            if obj:IsA("BasePart") then obj.CanCollide = false end
         end
     end
 end))
 
--- Keep ESP distance meaningful by hiding entries beyond the selected range.
 table.insert(Connections, RunService.RenderStepped:Connect(function()
     if not State.ESP or not Character then return end
     local root = Character:FindFirstChild("HumanoidRootPart")
@@ -514,6 +574,20 @@ table.insert(Connections, RunService.RenderStepped:Connect(function()
         if entry.Billboard then
             local head = player.Character and player.Character:FindFirstChild("Head")
             entry.Billboard.Enabled = head ~= nil and target ~= nil and (root.Position - target.Position).Magnitude <= Config.ESPRange
+        end
+    end
+end))
+
+table.insert(Connections, UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.Q then
+        State.NPCAim = not State.NPCAim
+        if State.NPCAim then
+            startNPCAim()
+            notify("NPC Aim", "Enabled")
+        else
+            stopNPCAim()
+            notify("NPC Aim", "Disabled")
         end
     end
 end))
